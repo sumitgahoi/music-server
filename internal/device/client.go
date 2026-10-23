@@ -28,6 +28,8 @@ type Song struct {
 	Metadata       json.RawMessage
 	Artwork        string
 	PlayCount      int
+	FinishedCount  int
+	SkipCount      int
 	ListenedMs     int64
 	LastPlayedAtMs *int64
 	Liked          *int
@@ -99,15 +101,17 @@ func (c *Client) configure() error {
 	return err
 }
 
-// Enqueue stores a play, like, or unlike until the server has acknowledged it
+// Enqueue stores one user action until the server has acknowledged it
 // and this device has applied that log row.
 func (c *Client) Enqueue(songID, typ string, occurred *int64, payload json.RawMessage) (string, error) {
-	if songID == "" || (typ != "play" && typ != "like" && typ != "unlike") {
+	if songID == "" {
 		return "", errors.New("invalid action")
 	}
-	if len(payload) == 0 {
-		payload = []byte(`{}`)
+	canonical, _, err := inventory.CanonicalUserPayload(typ, payload)
+	if err != nil {
+		return "", err
 	}
+	payload = canonical
 	id, err := newID()
 	if err != nil {
 		return "", err
@@ -363,7 +367,7 @@ func applyAction(tx *sql.Tx, action inventory.Action) error {
 			return fmt.Errorf("song %s is not on this device", action.SongID)
 		}
 		return nil
-	case "play", "like", "unlike":
+	case "play", "finish", "skip", "like", "unlike":
 		var raw string
 		err := tx.QueryRow(`SELECT analytics FROM songs WHERE id = ?`, action.SongID).Scan(&raw)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -406,6 +410,8 @@ func (c *Client) Songs() ([]Song, error) {
 			return nil, err
 		}
 		song.PlayCount = parsed.PlayCount
+		song.FinishedCount = parsed.FinishedCount
+		song.SkipCount = parsed.SkipCount
 		song.ListenedMs = parsed.ListenedMs
 		song.LastPlayedAtMs = parsed.LastPlayedAtMs
 		song.Liked = parsed.Liked
@@ -440,6 +446,8 @@ func (c *Client) Songs() ([]Song, error) {
 		}
 		raw, err := json.Marshal(stats{
 			PlayCount:      song.PlayCount,
+			FinishedCount:  song.FinishedCount,
+			SkipCount:      song.SkipCount,
 			ListenedMs:     song.ListenedMs,
 			LastPlayedAtMs: song.LastPlayedAtMs,
 			Liked:          song.Liked,
@@ -456,6 +464,8 @@ func (c *Client) Songs() ([]Song, error) {
 			return nil, err
 		}
 		song.PlayCount = parsed.PlayCount
+		song.FinishedCount = parsed.FinishedCount
+		song.SkipCount = parsed.SkipCount
 		song.ListenedMs = parsed.ListenedMs
 		song.LastPlayedAtMs = parsed.LastPlayedAtMs
 		song.Liked = parsed.Liked
@@ -465,6 +475,8 @@ func (c *Client) Songs() ([]Song, error) {
 
 type stats struct {
 	PlayCount      int    `json:"playCount"`
+	FinishedCount  int    `json:"finishedCount"`
+	SkipCount      int    `json:"skipCount"`
 	ListenedMs     int64  `json:"listenedMs"`
 	LastPlayedAtMs *int64 `json:"lastPlayedAtMs"`
 	Liked          *int   `json:"liked"`
@@ -489,10 +501,8 @@ func foldStats(raw []byte, typ string, payload json.RawMessage, occurred *int64)
 		var body struct {
 			ListenedMs int64 `json:"listenedMs"`
 		}
-		if len(payload) > 0 {
-			if err := json.Unmarshal(payload, &body); err != nil {
-				return nil, err
-			}
+		if err := json.Unmarshal(payload, &body); err != nil || body.ListenedMs <= inventory.MinPlayMs {
+			return nil, fmt.Errorf("invalid play")
 		}
 		s.PlayCount++
 		s.ListenedMs += body.ListenedMs
@@ -500,6 +510,10 @@ func foldStats(raw []byte, typ string, payload json.RawMessage, occurred *int64)
 			v := *occurred
 			s.LastPlayedAtMs = &v
 		}
+	case "finish":
+		s.FinishedCount++
+	case "skip":
+		s.SkipCount++
 	case "like":
 		v := 1
 		s.Liked = &v

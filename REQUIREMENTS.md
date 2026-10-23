@@ -2,15 +2,16 @@
 
 ## Purpose
 
-Build a personal music system with a Go/SQLite server and an
-offline-first client. Reliability, simplicity, and maintainability
-matter more than features.
+Build a personal music server in Go with SQLite. Reliability,
+simplicity, and maintainability matter more than features.
+
+Clients read the catalog, send user actions, and keep their own
+playback, offline caches, and search indexes. Those are not this
+server's job.
 
 ## Architecture decisions
 
 - Server: Go and SQLite, developed on a Debian Linux VM.
-- Client: programs read the inventory as JSON. A native Swift iPhone
-app with local SQLite comes later.
 - A song is its song_id. Paths are not sent to devices. Hash identifies
 the current bytes, with the in-place update in Library and identity.
 - Catalog changes and user actions share one append-only log.
@@ -20,6 +21,8 @@ A device keeps one cursor.
 - A device hydrates from one consistent read, then applies actions
 after that cursor.
 - Keep the SQLite database on local disk.
+- The server does not search, play audio, cache songs for offline
+playback, or ship a native client.
 
 ## Product requirements
 
@@ -35,8 +38,8 @@ and the previous bytes are no longer in the library.
 - A missing file is reported missing. Its row and history stay.
 - Rescanning an unchanged library adds nothing.
 - Read music files without modifying their contents or tags.
-- A scan keeps the formats iPhone plays: MP3, AAC, Apple Lossless,
-FLAC, WAV, AIFF, and Dolby Digital. Other files are left out.
+- A scan keeps MP3, AAC, Apple Lossless, FLAC, WAV, AIFF, and Dolby
+Digital. Other files are left out.
 
 MVP limitations, deferred to a later milestone:
 
@@ -51,28 +54,50 @@ splits that path into a new song.
 several copies of one song into different bytes, the old songs stay
 missing and new songs are created.
 
-### Playback and offline operation
-
-- Playback must not wait for user-state synchronization.
-- Previously downloaded music must remain playable without a server.
-- Target behavior: download on first play and play from local storage.
-- Start with an LRU cache of approximately 100 songs.
-- Active playback and in-progress downloads must be protected
-from eviction.
-- Playback and cache implementation follow the identity/sync prototype.
-
 ### User state
 
-- Preserve plays, likes, and playlists across device changes.
+- Preserve plays, finishes, skips, likes, and playlists across device
+changes.
 - Keep each user's state isolated.
 - Record offline changes in a durable local queue of actions.
 - Give actions stable IDs so retries cannot apply them twice.
 - Preserve distinct legitimate plays, including simultaneous plays
 from different devices.
+- A play counts when the listener has played the song for more than
+30 seconds. Spotify counts a stream at 30 seconds or more. Apple
+records a play at more than 30 seconds. More than 30 seconds is both.
+A second action id is a second play. listenedMs is required and is
+added to listened_ms. A song of 30 seconds or less never becomes a
+play, including when it is heard through. occurred_at_ms is
+descriptive and does not order anything.
+- A finish counts when playback reaches the natural end of the song.
+Spotify records that end as trackdone. Apple records it as
+NATURAL_END_OF_TRACK. Each accepted finish adds one to finished_count.
+- A skip counts when the listener skips forward to the next song.
+Spotify records that as a skip to the next song. Apple records a
+forward skip. Stopping, going back, scrubbing, or choosing a
+different song is not a skip. Each accepted skip adds one to
+skip_count.
+- A play, a finish, and a skip are separate actions. Hearing the end
+after 30 seconds is a play and a finish. Skipping forward after 30
+seconds is a play and a skip. Skipping forward before that is only a
+skip. One action does not imply the others.
+- liked is the heart: Spotify's like and Apple's love.
+- Every song in the catalog is already in the user's library.
 - Like and unlike fold in server accept order. That order is the only
 conflict rule. Client clocks are descriptive. Define playlist conflict
 behavior before implementing playlists.
 - Acknowledge events only after durable server persistence.
+
+### Authentication
+
+- Google OAuth 2 is the only sign-in.
+- A configuration file lists the Google accounts that may use the
+server. A signed-in account that is not on the list is refused.
+- The accepted Google account is the user id. A user id in an action
+body is not that binding.
+- The Google client credentials are separate from the allowlist and
+are not written to logs.
 
 ### Synchronization and recovery
 
@@ -86,14 +111,25 @@ must not double-count a play already included in analytics, and must
 not miss a song added after it.
 - Preserve pending local actions during bootstrap or recovery.
 - A successful retry must return an unambiguous acknowledgement.
-- Detect an invalid cursor or changed server history and recover
-explicitly rather than silently skipping data.
-- A new phone must recover synchronized user state from the server.
+- A cursor past the greatest seq means this server history does not
+match the client. The client bootstraps again instead of skipping
+data.
+- A new device must recover synchronized user state from the server.
 Unsynchronized events cannot be recovered from a lost device.
+- library_id stays fixed for the life of one database file. Noticing
+that the file was replaced by a different library, and forcing a new
+bootstrap from that change, is Day 2.
+
+### Release and service
+
+- A GitHub release builds the Go server binary for the Debian host.
+- A systemd unit in this repository runs that binary on the host,
+restarts it on failure, and points it at the music root, database,
+and configuration.
 
 ## Development strategy
 
-Prove architecture risks before building a polished player.
+Prove architecture risks before adding operations around them.
 
 ### Milestone 1: library inventory
 
@@ -119,16 +155,16 @@ added or removed.
 are missing.
 
 Use copied sample files, not the production music collection.
-No playback, accounts, synchronization, or the iPhone app in this
-milestone.
+No accounts or synchronization in this milestone.
 
-### Milestone 2: synchronization spike — current task
+### Milestone 2: synchronization spike
 
 Use one Go server and two lightweight simulated clients with separate
 SQLite databases and durable event queues.
 
 Begin with play events and a like/unlike operation. Defer playlists
-until the core protocol works.
+until the core protocol works. Finish and skip are accepted in
+Milestone 3.
 
 Prove:
 
@@ -147,19 +183,32 @@ apply it twice.
 writes, then catches up from the action log.
 - Client recovery preserves pending local actions.
 
-The simulator proves protocol behavior; native iOS validation follows.
+### Milestone 3: accounts, finish and skip, and running the server — current task
 
-### Later milestones
+- Accept play, finish, and skip with the definitions above. A retry
+of the same action id does not apply twice.
+- Sign-in is Google OAuth 2, and the allowlist file is the only list
+of users.
+- A GitHub release produces the server binary.
+- systemd runs the server on the Debian host.
 
-- Search and audio delivery.
-- A thin native iPhone client proving actual offline playback and sync.
-- Cache management and everyday usability.
-- Playlists and additional features only after the foundation works.
+### Day 2
 
-## Non-goals for the prototype
+- A replaced database with a different library_id forces a new
+bootstrap.
 
+### Later
+
+- Playlists, only after their conflict rules are written down.
+playlistAdds, the count of songs added to a playlist, comes with that.
+
+## Non-goals
+
+- Search or a full-text index on the server. Each client builds its
+own index.
+- Playback, an offline song cache, and a native iPhone client.
 - Replacing or adapting the standalone OpenSubsonic client.
 - Spotify Connect-style remote playback.
 - Recommendations, YouTube integration, or polished UI.
 - Microservices, brokers, distributed databases, or plugin frameworks.
-- Production deployment, public exposure, or production data migration.
+- Public exposure or production data migration.

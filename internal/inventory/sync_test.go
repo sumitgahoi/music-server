@@ -75,7 +75,7 @@ func TestAcceptIsIdempotentForOneUser(t *testing.T) {
 	apply(t, s, "/music", Observation{Path: "song.mp3", ContentID: "alpha", Size: 3})
 	songID := mustSnapshot(t, s).Assets[0].ID
 	when := int64(10)
-	in := Submit{ActionID: "p1", SongID: songID, Type: "play", OccurredAtMs: &when, Payload: []byte(`{"userId":"bea","listenedMs":5}`)}
+	in := Submit{ActionID: "p1", SongID: songID, Type: "play", OccurredAtMs: &when, Payload: []byte(`{"userId":"bea","listenedMs":30001}`)}
 	seq, err := s.Accept("ada", "phone", in)
 	if err != nil {
 		t.Fatal(err)
@@ -84,12 +84,12 @@ func TestAcceptIsIdempotentForOneUser(t *testing.T) {
 	if err != nil || again != seq {
 		t.Fatalf("retry seq %d err %v", again, err)
 	}
-	in.Payload = []byte(`{"listenedMs":9}`)
+	in.Payload = []byte(`{"listenedMs":40000}`)
 	if _, err := s.Accept("ada", "phone", in); !errors.Is(err, ErrConflict) {
 		t.Fatalf("conflict err = %v", err)
 	}
-	if _, err := s.Accept("ada", "phone", Submit{ActionID: "done", SongID: songID, Type: "finish"}); !errors.Is(err, ErrAction) {
-		t.Fatalf("finish err = %v", err)
+	if _, err := s.Accept("ada", "phone", Submit{ActionID: "short", SongID: songID, Type: "play", Payload: []byte(`{"listenedMs":30000}`)}); !errors.Is(err, ErrAction) {
+		t.Fatalf("short play err = %v", err)
 	}
 	ada := mustBootstrap(t, s, "ada")
 	bea := mustBootstrap(t, s, "bea")
@@ -97,7 +97,7 @@ func TestAcceptIsIdempotentForOneUser(t *testing.T) {
 	if err := json.Unmarshal(songByHash(t, ada, "alpha").Analytics, &stats); err != nil {
 		t.Fatal(err)
 	}
-	if stats.PlayCount != 1 || stats.ListenedMs != 5 || stats.LastPlayedAtMs == nil || *stats.LastPlayedAtMs != 10 {
+	if stats.PlayCount != 1 || stats.ListenedMs != 30001 || stats.LastPlayedAtMs == nil || *stats.LastPlayedAtMs != 10 {
 		t.Fatalf("ada = %+v", stats)
 	}
 	if string(songByHash(t, bea, "alpha").Analytics) != "{}" {
@@ -131,7 +131,7 @@ func TestServerRestartKeepsAcceptedState(t *testing.T) {
 		t.Fatal(err)
 	}
 	songID := mustSnapshot(t, s).Assets[0].ID
-	if _, err := s.Accept("ada", "phone", Submit{ActionID: "p1", SongID: songID, Type: "play", Payload: []byte(`{}`)}); err != nil {
+	if _, err := s.Accept("ada", "phone", Submit{ActionID: "p1", SongID: songID, Type: "play", Payload: []byte(`{"listenedMs":30001}`)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.Close(); err != nil {
@@ -163,6 +163,79 @@ func TestServerRestartKeepsAcceptedState(t *testing.T) {
 	if stats.PlayCount != 1 {
 		t.Fatalf("play count = %d", stats.PlayCount)
 	}
+}
+
+func TestListeningCountsMatchThePublishedActions(t *testing.T) {
+	s := newStore(t)
+	apply(t, s, "/music", Observation{Path: "song.mp3", ContentID: "alpha", Size: 3})
+	songID := mustSnapshot(t, s).Assets[0].ID
+	accept := func(id, typ, payload string) {
+		t.Helper()
+		var raw []byte
+		if payload != "" {
+			raw = []byte(payload)
+		}
+		if _, err := s.Accept("ada", "phone", Submit{ActionID: id, SongID: songID, Type: typ, Payload: raw}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	accept("skip-early", "skip", "")
+	accept("finish-short", "finish", "")
+	accept("play-1", "play", `{"listenedMs":30001}`)
+	accept("skip-late", "skip", "")
+	accept("finish-long", "finish", "")
+	if _, err := s.Accept("ada", "phone", Submit{ActionID: "save-1", SongID: songID, Type: "save"}); !errors.Is(err, ErrAction) {
+		t.Fatalf("save err = %v", err)
+	}
+	if _, err := s.Accept("ada", "phone", Submit{ActionID: "add-1", SongID: songID, Type: "playlist_add"}); !errors.Is(err, ErrAction) {
+		t.Fatalf("playlist add err = %v", err)
+	}
+	stats := analyticsFor(t, s, "ada", "alpha")
+	if stats.PlayCount != 1 || stats.ListenedMs != 30001 || stats.SkipCount != 2 || stats.FinishedCount != 2 {
+		t.Fatalf("counts = %+v", stats)
+	}
+}
+
+func TestDeferredAnalyticsColumnsAreRemoved(t *testing.T) {
+	s := newStore(t)
+	if _, err := s.db.Exec(`ALTER TABLE analytics ADD COLUMN saved INTEGER`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`ALTER TABLE analytics ADD COLUMN playlist_adds INTEGER NOT NULL DEFAULT 0`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ensureListeningColumns(); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.db.Query(`PRAGMA table_info(analytics)`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			t.Fatal(err)
+		}
+		if name == "saved" || name == "playlist_adds" {
+			t.Fatalf("%s column remains", name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func analyticsFor(t *testing.T, s *Store, user, hash string) userAnalytics {
+	t.Helper()
+	cat := mustBootstrap(t, s, user)
+	var stats userAnalytics
+	if err := json.Unmarshal(songByHash(t, cat, hash).Analytics, &stats); err != nil {
+		t.Fatal(err)
+	}
+	return stats
 }
 
 func TestBootstrapMissesAConcurrentWrite(t *testing.T) {

@@ -56,7 +56,11 @@ func (s *Store) nowMS() int64 {
 	return time.Now().UnixMilli()
 }
 
-// Accept appends one play, like, or unlike and updates that user's analytics.
+// MinPlayMs is the published play threshold. A play counts only after more
+// than 30 seconds, which is Apple's play and, past that instant, Spotify's stream.
+const MinPlayMs = 30_000
+
+// Accept appends one user action and updates that user's analytics.
 // The same action id and body returns the original seq and changes nothing.
 func (s *Store) Accept(userID, deviceID string, in Submit) (int64, error) {
 	if err := validateUserID(userID); err != nil {
@@ -65,7 +69,7 @@ func (s *Store) Accept(userID, deviceID string, in Submit) (int64, error) {
 	if err := validateActionID(in.ActionID); err != nil || in.SongID == "" {
 		return 0, ErrAction
 	}
-	payload, listened, err := canonicalUserPayload(in.Type, in.Payload)
+	payload, listened, err := CanonicalUserPayload(in.Type, in.Payload)
 	if err != nil {
 		return 0, err
 	}
@@ -90,7 +94,7 @@ func (s *Store) Accept(userID, deviceID string, in Submit) (int64, error) {
 	err = tx.QueryRow(`SELECT seq, action_type, song_id, payload FROM actions WHERE action_id = ?`, in.ActionID).
 		Scan(&existingSeq, &existingType, &existingSong, &existingPayload)
 	if err == nil {
-		previous, _, perr := canonicalUserPayload(existingType, existingPayload)
+		previous, _, perr := CanonicalUserPayload(existingType, existingPayload)
 		if perr != nil || existingType != in.Type || existingSong != in.SongID || !bytes.Equal(previous, payload) {
 			return 0, ErrConflict
 		}
@@ -184,7 +188,9 @@ func (s *Store) ActionsAfter(userID string, seq int64) ([]Action, error) {
 	return out, rows.Err()
 }
 
-func canonicalUserPayload(typ string, raw json.RawMessage) ([]byte, int64, error) {
+// CanonicalUserPayload checks one user action and returns the body that is stored.
+// listened is the play duration, and zero for every other action.
+func CanonicalUserPayload(typ string, raw json.RawMessage) ([]byte, int64, error) {
 	if len(bytes.TrimSpace(raw)) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		raw = []byte(`{}`)
 	}
@@ -194,21 +200,18 @@ func canonicalUserPayload(typ string, raw json.RawMessage) ([]byte, int64, error
 	}
 	delete(obj, "userId")
 	switch typ {
-	case "like", "unlike":
+	case "like", "unlike", "finish", "skip":
 		if len(obj) != 0 {
 			return nil, 0, ErrAction
 		}
 		return []byte(`{}`), 0, nil
 	case "play":
-		if len(obj) == 0 {
-			return []byte(`{}`), 0, nil
-		}
 		rawMS, ok := obj["listenedMs"]
 		if !ok || len(obj) != 1 {
 			return nil, 0, ErrAction
 		}
 		var n int64
-		if err := json.Unmarshal(rawMS, &n); err != nil || n < 0 {
+		if err := json.Unmarshal(rawMS, &n); err != nil || n <= MinPlayMs {
 			return nil, 0, ErrAction
 		}
 		body, err := json.Marshal(struct {
@@ -238,6 +241,20 @@ func reduceUserAction(tx *sql.Tx, userID, songID, typ string, listened int64, oc
 				listened_ms = listened_ms + excluded.listened_ms,
 				last_played_at_ms = COALESCE(excluded.last_played_at_ms, analytics.last_played_at_ms)`,
 			userID, songID, listened, at)
+		return err
+	case "finish":
+		_, err := tx.Exec(`
+			INSERT INTO analytics (user_id, song_id, finished_count)
+			VALUES (?, ?, 1)
+			ON CONFLICT (user_id, song_id) DO UPDATE SET finished_count = finished_count + 1`,
+			userID, songID)
+		return err
+	case "skip":
+		_, err := tx.Exec(`
+			INSERT INTO analytics (user_id, song_id, skip_count)
+			VALUES (?, ?, 1)
+			ON CONFLICT (user_id, song_id) DO UPDATE SET skip_count = skip_count + 1`,
+			userID, songID)
 		return err
 	case "like", "unlike":
 		liked := 0

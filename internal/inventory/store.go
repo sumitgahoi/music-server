@@ -126,7 +126,10 @@ func (s *Store) configure() error {
 	if err := s.ensureMtimeColumn(); err != nil {
 		return err
 	}
-	return s.ensureArtworkColumns()
+	if err := s.ensureArtworkColumns(); err != nil {
+		return err
+	}
+	return s.ensureListeningColumns()
 }
 
 func (s *Store) ensureMetadataColumn() error {
@@ -227,6 +230,44 @@ func (s *Store) ensureArtworkColumns() error {
 	}
 	_, err = s.db.Exec(`CREATE INDEX IF NOT EXISTS assets_artwork_hash ON assets(artwork_hash)`)
 	return err
+}
+
+func (s *Store) ensureListeningColumns() error {
+	rows, err := s.db.Query(`PRAGMA table_info(analytics)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	haveSaved := false
+	haveAdds := false
+	for rows.Next() {
+		var cid, notnull, pk int
+		var name, typ string
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
+			return err
+		}
+		switch name {
+		case "saved":
+			haveSaved = true
+		case "playlist_adds":
+			haveAdds = true
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if haveSaved {
+		if _, err := s.db.Exec(`ALTER TABLE analytics DROP COLUMN saved`); err != nil {
+			return err
+		}
+	}
+	if haveAdds {
+		if _, err := s.db.Exec(`ALTER TABLE analytics DROP COLUMN playlist_adds`); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Store) ensureLibraryID() error {

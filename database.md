@@ -132,7 +132,8 @@ Ordering is seq. new state = f(state, action), applied in that order.
 The accepting transaction appends the action, updates the song row or
 that user's analytics, and acknowledges with seq.
 
-Authenticate user_id. A library action has no user. A retry with the
+The user id is the Google account accepted by the allowlist. A library
+action has no user. A retry with the
 same action_id and payload returns the existing seq and leaves state
 unchanged. The same action_id with a different payload is an error.
 User actions may reference unavailable songs.
@@ -140,13 +141,18 @@ User actions may reference unavailable songs.
 A device pulls actions with seq greater than its cursor, keeping
 catalog actions and its own user actions.
 
-This spike accepts play, like, and unlike. Finish and skip are not
-accepted until their meanings are defined.
-
-A play is one accepted action. A second action id is a second play,
-including two devices at once. payload listenedMs, when present, is
+A play counts when listenedMs is greater than 30 seconds. That is
+Apple's play and, past that instant, Spotify's stream. listenedMs is
 added to listened_ms. occurred_at_ms is stored as last_played_at_ms
-and does not order anything.
+and does not order anything. A second action id is a second play.
+
+A finish is the natural end of the song: Spotify trackdone, Apple
+NATURAL_END_OF_TRACK. It increments finished_count. A skip is a
+forward skip to the next song. It increments skip_count. Stopping,
+going back, scrubbing, or choosing another song is not a skip. A play
+does not imply a finish or a skip.
+
+Every song in the catalog is already in the user's library.
 
 Like sets liked to 1. Unlike sets it to 0. A later accepted action
 replaces the earlier one. The user is the authenticated id, never a
@@ -207,31 +213,31 @@ The device stores that state and seq together, then pulls actions with
 a greater seq. Plays already folded into analytics are not in that
 pull. A song added after the read arrives as a later song_upsert.
 
-A changed library_id requires a new bootstrap. A cursor past the
-greatest seq means this database was restored or replaced; the client
-bootstraps again. A stored copy of the document is not part of this
-design.
+library_id does not change for the life of this database file.
+Detecting a replaced file with a different library_id is Day 2. A
+cursor past the greatest seq means this history does not match the
+client; the client bootstraps again. A stored copy of the document
+is not part of this design.
 
 ## Client storage
 
 - Catalog state: id, hash, available, metadata, artwork hash, and this user's analytics.
 - Pending actions, removed only after the seq acknowledgement.
 - One cursor: seq from bootstrap, then the latest applied action.
-- Local audio cache records.
-- A full-text index derived from inventory metadata.
 
 Do not copy file_location. Commit received state and its cursor together.
 Keep unacknowledged local actions, and apply them on top after bootstrap.
+Clients keep their own playback caches and search indexes.
 
 ## Playlists
 
-Deferred until conflict rules are defined.
+Deferred until conflict rules are defined. playlistAdds, the count of
+songs added to a playlist, comes with that.
 
 ## Implementation
 
 - Foreign keys on every SQLite connection.
 - Database file on local disk, even when audio is on SMB.
 - JSON expression indexes only for real filters.
-- A separate full-text index for search.
 - The library is rows, not one JSON document.
 - No document-store or sync framework.

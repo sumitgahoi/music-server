@@ -535,7 +535,7 @@ func TestActionLogUsesTheHeaderUser(t *testing.T) {
 	}
 	ts, _ := serve(t, root, store)
 	cat := getSnapshot(t, ts.URL, "ada")
-	body := []byte(`{"actionId":"play-1","userId":"bea","songId":"` + cat.Songs[0].ID + `","type":"play","payload":{"userId":"bea","listenedMs":40}}`)
+	body := []byte(`{"actionId":"play-1","userId":"bea","songId":"` + cat.Songs[0].ID + `","type":"play","payload":{"userId":"bea","listenedMs":30001}}`)
 	res := postJSON(t, ts.URL+"/actions", "ada", "phone", body)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("status %s", res.Status)
@@ -558,7 +558,7 @@ func TestActionLogUsesTheHeaderUser(t *testing.T) {
 	if again.StatusCode != http.StatusOK || ack2.Seq != ack.Seq {
 		t.Fatalf("retry status %s seq %d want %d", again.Status, ack2.Seq, ack.Seq)
 	}
-	changed := bytes.Replace(body, []byte(`"listenedMs":40`), []byte(`"listenedMs":1`), 1)
+	changed := bytes.Replace(body, []byte(`"listenedMs":30001`), []byte(`"listenedMs":40000`), 1)
 	conflict := postJSON(t, ts.URL+"/actions", "ada", "phone", changed)
 	conflict.Body.Close()
 	if conflict.StatusCode != http.StatusConflict {

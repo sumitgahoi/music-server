@@ -70,10 +70,10 @@ func TestClientsConvergeAndStayIsolated(t *testing.T) {
 		t.Fatalf("like did not follow accept order")
 	}
 	when := int64(20)
-	if _, err := ada.Enqueue(song, "play", &when, []byte(`{"listenedMs":8}`)); err != nil {
+	if _, err := ada.Enqueue(song, "play", &when, []byte(`{"listenedMs":30001}`)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := other.Enqueue(song, "play", &when, []byte(`{"listenedMs":3}`)); err != nil {
+	if _, err := other.Enqueue(song, "play", &when, []byte(`{"listenedMs":45000}`)); err != nil {
 		t.Fatal(err)
 	}
 	if err := ada.Sync(); err != nil || other.Sync() != nil || ada.Sync() != nil {
@@ -114,7 +114,7 @@ func TestRetryDoesNotDoubleApply(t *testing.T) {
 	if err := phone.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := phone.Enqueue(song, "play", nil, []byte(`{}`)); err != nil {
+	if _, err := phone.Enqueue(song, "play", nil, []byte(`{"listenedMs":30001}`)); err != nil {
 		t.Fatal(err)
 	}
 	if err := phone.Sync(); err == nil {
