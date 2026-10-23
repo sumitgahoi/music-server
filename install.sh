@@ -281,8 +281,8 @@ ensure_user() {
     return 0
   fi
   if ! getent passwd "$service" >/dev/null; then
-    command -v adduser >/dev/null || die "adduser is required"
-    adduser --system --group --home /var/lib/music-server --shell /usr/sbin/nologin --no-create-home "$service"
+    command -v useradd >/dev/null || die "useradd is required"
+    useradd --system --user-group --home-dir /var/lib/music-server --shell /usr/sbin/nologin "$service"
   fi
   chown "$service:" -- "$state_dir"
 }
