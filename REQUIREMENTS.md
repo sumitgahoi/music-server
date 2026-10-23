@@ -122,10 +122,27 @@ bootstrap from that change, is Day 2.
 
 ### Release and service
 
-- A GitHub release builds the Go server binary for the Debian host.
-- A systemd unit in this repository runs that binary on the host,
-restarts it on failure, and points it at the music root, database,
-and configuration.
+- A GitHub release builds the server binary for linux/amd64 and
+linux/arm64.
+- The install instructions are in README.md. They download the latest
+install.sh and run it. A checkout is not required. That script
+installs the server. When the binary and configuration are already
+present, the same script upgrades: it replaces the binary, the unit,
+and uninstall.sh, and appends config keys that are not set yet.
+- The systemd unit is enabled at boot and restarts on failure. The
+service runs as the music-server user, which needs read access to
+the music folder.
+- uninstall.sh is installed next to the binary at
+/usr/local/bin/uninstall.sh. It removes the service and the binary.
+It asks whether to leave the database and artwork cache, or to
+remove those too. --keep-data and --purge make that choice without
+asking. The conf file and the music folder stay.
+- The server reads /etc/music-server/music-server.conf. The shipped
+default lists music_root. The installer asks for the music folder
+and writes it there. Later settings, including the account allowlist,
+are added to this file. The database path, listen address, and scan
+interval stay server defaults. The database and the artwork cache
+live under /var/lib/music-server.
 
 ## Development strategy
 

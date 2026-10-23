@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"flag"
 	"fmt"
 	"log"
@@ -13,18 +14,23 @@ import (
 )
 
 func main() {
+	configFlag := flag.String("config", "", "configuration file")
 	rootFlag := flag.String("root", "", "music folder to inventory")
 	dbFlag := flag.String("db", "inventory.db", "SQLite inventory database")
 	addr := flag.String("addr", "0.0.0.0:8080", "listen address")
 	scan := flag.Bool("scan", true, "scan the folder in the background")
 	scanInterval := flag.Duration("scan-interval", 15*time.Minute, "rescan period; 0 disables the timer")
 	flag.Parse()
-	if *rootFlag == "" {
-		fmt.Fprintln(os.Stderr, "usage: server -root DIR [-db inventory.db] [-addr 0.0.0.0:8080] [-scan=false] [-scan-interval 15m]")
+	rootValue, err := resolveRoot(*configFlag, *rootFlag)
+	if errors.Is(err, errUsage) {
+		fmt.Fprintln(os.Stderr, err.Error())
 		os.Exit(2)
 	}
+	if err != nil {
+		log.Fatal(err)
+	}
 
-	root, err := inventory.CleanRoot(*rootFlag)
+	root, err := inventory.CleanRoot(rootValue)
 	if err != nil {
 		log.Fatal(err)
 	}
