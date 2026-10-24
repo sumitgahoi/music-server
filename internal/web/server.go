@@ -36,13 +36,10 @@ func New(root string, store *inventory.Store) *Handler {
 	return &Handler{Root: root, Store: store, scan: inventory.Scan}
 }
 
-// Start begins library scans without waiting for one to finish.
-// An initial scan runs when scanNow is set. A positive interval scans
+// Start begins an immediate library scan. A positive interval scans
 // again on that period. A tick or POST /rescan during a scan does nothing.
-func (h *Handler) Start(scanNow bool, interval time.Duration) {
-	if scanNow {
-		h.trigger()
-	}
+func (h *Handler) Start(interval time.Duration) {
+	h.trigger()
 	if interval <= 0 {
 		return
 	}

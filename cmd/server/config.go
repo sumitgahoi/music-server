@@ -10,7 +10,7 @@ import (
 )
 
 // errUsage means the process was started without a configuration file or a music folder.
-var errUsage = errors.New("usage: server -config FILE | -root DIR [-db inventory.db] [-addr 0.0.0.0:8080] [-scan=false] [-scan-interval 15m]")
+var errUsage = errors.New("usage: server -config FILE | -root DIR [-db inventory.db] [-addr 0.0.0.0:8080] [-scan-interval 15m]")
 
 // fileConfig is the site configuration. The database path, listen address,
 // and scan interval stay flags.
