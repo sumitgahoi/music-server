@@ -169,14 +169,12 @@ choose_mode() {
 remove_service_and_binary() {
   if [ -z "$prefix" ]; then
     run_systemctl disable --now "$service" || true
+    run_systemctl reset-failed "$service" || true
   else
     run_systemctl disable --now "$service"
   fi
   rm -f -- "$unit_path"
   run_systemctl daemon-reload || true
-  if [ -z "$prefix" ]; then
-    run_systemctl reset-failed "$service" || true
-  fi
   rm -f -- "$bin_path" "$uninstall_path"
 }
 
