@@ -87,7 +87,22 @@ skip. One action does not imply the others.
 - Like and unlike fold in server accept order. That order is the only
 conflict rule. Client clocks are descriptive. Define playlist conflict
 behavior before implementing playlists.
+- Liked songs are an ordered list, not an analytics field, most
+recently liked first. A like adds the song at the top. A like for a
+song already liked changes nothing, so it keeps its place. An unlike
+removes it, and a later like adds it at the top again. Bootstrap sends
+that list as liked, in that order, separate from per-song analytics.
 - Acknowledge events only after durable server persistence.
+- Freeze these action types and payloads for launch. Catalog:
+song_upsert `{hash, available, metadata, artwork?}`, song_unavailable
+`{"available": false}`. Listening: play `{"listenedMs": N}` with
+N > 30000, finish `{}`, skip `{}`. Membership: like `{}`, unlike `{}`.
+Do not overload them. Playlists get new types after their conflict
+rules are written. Analytics is per-user counters only
+(play_count, finished_count, skip_count, listened_ms,
+last_played_at_ms), folded from the log for bootstrap. Recently played
+is not a table; it is a query over play actions when that screen
+exists.
 
 ### Authentication
 
@@ -119,6 +134,11 @@ Unsynchronized events cannot be recovered from a lost device.
 - library_id stays fixed for the life of one database file. Noticing
 that the file was replaced by a different library, and forcing a new
 bootstrap from that change, is Day 2.
+- A later optional SSE endpoint may nudge open clients when seq
+advances. Nudge only: latest seq or keepalive comments, never action
+bodies. Clients still catch up with GET /actions?since=. A missed
+nudge is harmless. Do not stream the log over SSE, and do not add a
+seq-returning keepalive for clients that already pull on foreground.
 
 ### Release and service
 

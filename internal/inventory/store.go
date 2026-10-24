@@ -117,157 +117,7 @@ func (s *Store) configure() error {
 	if version != "1" {
 		return fmt.Errorf("unsupported inventory schema %s", version)
 	}
-	if err := s.ensureLibraryID(); err != nil {
-		return err
-	}
-	if err := s.ensureMetadataColumn(); err != nil {
-		return err
-	}
-	if err := s.ensureMtimeColumn(); err != nil {
-		return err
-	}
-	if err := s.ensureArtworkColumns(); err != nil {
-		return err
-	}
-	return s.ensureListeningColumns()
-}
-
-func (s *Store) ensureMetadataColumn() error {
-	rows, err := s.db.Query(`PRAGMA table_info(assets)`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid, notnull, pk int
-		var name, typ string
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			return err
-		}
-		if name == "metadata" {
-			return rows.Err()
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	_, err = s.db.Exec(`ALTER TABLE assets ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'`)
-	return err
-}
-
-func (s *Store) ensureMtimeColumn() error {
-	rows, err := s.db.Query(`PRAGMA table_info(locations)`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid, notnull, pk int
-		var name, typ string
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			return err
-		}
-		if name == "mtime_ns" {
-			return rows.Err()
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	_, err = s.db.Exec(`ALTER TABLE locations ADD COLUMN mtime_ns INTEGER NOT NULL DEFAULT 0`)
-	return err
-}
-
-func (s *Store) ensureArtworkColumns() error {
-	rows, err := s.db.Query(`PRAGMA table_info(assets)`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	haveHash := false
-	haveMIME := false
-	haveChecked := false
-	for rows.Next() {
-		var cid, notnull, pk int
-		var name, typ string
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			return err
-		}
-		switch name {
-		case "artwork_hash":
-			haveHash = true
-		case "artwork_mime":
-			haveMIME = true
-		case "store_checked":
-			haveChecked = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if !haveHash {
-		if _, err := s.db.Exec(`ALTER TABLE assets ADD COLUMN artwork_hash TEXT`); err != nil {
-			return err
-		}
-	}
-	if !haveMIME {
-		if _, err := s.db.Exec(`ALTER TABLE assets ADD COLUMN artwork_mime TEXT`); err != nil {
-			return err
-		}
-	}
-	if !haveChecked {
-		if _, err := s.db.Exec(`ALTER TABLE assets ADD COLUMN store_checked INTEGER NOT NULL DEFAULT 0`); err != nil {
-			return err
-		}
-		// Covers already stored do not need a store lookup. An empty hash
-		// stays unchecked so the next scan can try a purchase id once.
-		if _, err := s.db.Exec(`UPDATE assets SET store_checked = 1 WHERE artwork_hash IS NOT NULL AND artwork_hash != ''`); err != nil {
-			return err
-		}
-	}
-	_, err = s.db.Exec(`CREATE INDEX IF NOT EXISTS assets_artwork_hash ON assets(artwork_hash)`)
-	return err
-}
-
-func (s *Store) ensureListeningColumns() error {
-	rows, err := s.db.Query(`PRAGMA table_info(analytics)`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	haveSaved := false
-	haveAdds := false
-	for rows.Next() {
-		var cid, notnull, pk int
-		var name, typ string
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			return err
-		}
-		switch name {
-		case "saved":
-			haveSaved = true
-		case "playlist_adds":
-			haveAdds = true
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if haveSaved {
-		if _, err := s.db.Exec(`ALTER TABLE analytics DROP COLUMN saved`); err != nil {
-			return err
-		}
-	}
-	if haveAdds {
-		if _, err := s.db.Exec(`ALTER TABLE analytics DROP COLUMN playlist_adds`); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.ensureLibraryID()
 }
 
 func (s *Store) ensureLibraryID() error {
@@ -350,6 +200,8 @@ CREATE TABLE IF NOT EXISTS locations (
 CREATE UNIQUE INDEX IF NOT EXISTS locations_one_present_path
 	ON locations(path) WHERE present = 1;
 
+CREATE INDEX IF NOT EXISTS assets_artwork_hash ON assets(artwork_hash);
+
 CREATE TABLE IF NOT EXISTS library_state (
 	singleton_id INTEGER PRIMARY KEY CHECK (singleton_id = 1),
 	library_id   TEXT NOT NULL
@@ -375,8 +227,14 @@ CREATE TABLE IF NOT EXISTS analytics (
 	skip_count       INTEGER NOT NULL DEFAULT 0,
 	listened_ms      INTEGER NOT NULL DEFAULT 0,
 	last_played_at_ms INTEGER,
-	liked            INTEGER,
 	PRIMARY KEY (user_id, song_id)
+);
+
+CREATE TABLE IF NOT EXISTS liked (
+	id      INTEGER PRIMARY KEY AUTOINCREMENT,
+	user_id TEXT NOT NULL,
+	song_id TEXT NOT NULL REFERENCES assets(id),
+	UNIQUE (user_id, song_id)
 );
 `
 

@@ -66,7 +66,7 @@ func TestClientsConvergeAndStayIsolated(t *testing.T) {
 	if err := ada.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	if liked(t, ada, song) != 0 || liked(t, other, song) != 0 {
+	if liked(t, ada, song) || liked(t, other, song) {
 		t.Fatalf("like did not follow accept order")
 	}
 	when := int64(20)
@@ -85,7 +85,7 @@ func TestClientsConvergeAndStayIsolated(t *testing.T) {
 	if err := bea.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	if plays(t, bea, song) != 0 || liked(t, bea, song) != -1 {
+	if plays(t, bea, song) != 0 || liked(t, bea, song) {
 		t.Fatal("second user saw the first user's state")
 	}
 	if err := store.Apply("/music", []inventory.Observation{
@@ -100,7 +100,7 @@ func TestClientsConvergeAndStayIsolated(t *testing.T) {
 	if err := ada.Sync(); err != nil {
 		t.Fatal(err)
 	}
-	if songByHash(t, ada, "beta") == "" || liked(t, ada, song) != 1 {
+	if songByHash(t, ada, "beta") == "" || !liked(t, ada, song) {
 		t.Fatal("later song and like did not share the cursor")
 	}
 }
@@ -176,7 +176,7 @@ func TestPendingSurvivesRestartAndRecovery(t *testing.T) {
 	if n, err := phone.Pending(); err != nil || n != 1 {
 		t.Fatalf("pending = %d err %v", n, err)
 	}
-	if liked(t, phone, song) != 1 {
+	if !liked(t, phone, song) {
 		t.Fatal("pending like was not kept")
 	}
 	if _, err := phone.db.Exec(`UPDATE cursor_state SET seq = 999999`); err != nil {
@@ -188,9 +188,78 @@ func TestPendingSurvivesRestartAndRecovery(t *testing.T) {
 	if n, err := phone.Pending(); err != nil || n != 0 {
 		t.Fatalf("pending after recovery = %d err %v", n, err)
 	}
-	if liked(t, phone, song) != 1 || songByHash(t, phone, "alpha") == "" {
+	if !liked(t, phone, song) || songByHash(t, phone, "alpha") == "" {
 		t.Fatal("recovery dropped the song or the like")
 	}
+}
+
+func TestLikedOrderMatchesTheServerAcrossDevices(t *testing.T) {
+	store := openInventory(t)
+	if err := store.Apply("/music", []inventory.Observation{
+		{Path: "a.mp3", ContentID: "alpha", Size: 1},
+		{Path: "b.mp3", ContentID: "beta", Size: 1},
+		{Path: "c.mp3", ContentID: "gamma", Size: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	phone := openClient(t, store, "ada", "phone")
+	web := openClient(t, store, "ada", "web")
+	if err := phone.Sync(); err != nil || web.Sync() != nil {
+		t.Fatal("first sync")
+	}
+	alpha, beta, gamma := songByHash(t, phone, "alpha"), songByHash(t, phone, "beta"), songByHash(t, phone, "gamma")
+
+	if _, err := phone.Enqueue(alpha, "like", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := web.Enqueue(beta, "like", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := web.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := phone.Enqueue(gamma, "like", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustLiked(t, phone); !sameIDs(got, gamma, alpha) {
+		t.Fatalf("offline phone liked = %v", got)
+	}
+	if err := phone.Sync(); err != nil || web.Sync() != nil {
+		t.Fatal("second sync")
+	}
+	for name, c := range map[string]*Client{"phone": phone, "web": web} {
+		if got := mustLiked(t, c); !sameIDs(got, gamma, alpha, beta) {
+			t.Fatalf("%s liked = %v", name, got)
+		}
+	}
+	fresh := openClient(t, store, "ada", "fresh")
+	if err := fresh.Sync(); err != nil {
+		t.Fatal(err)
+	}
+	if got := mustLiked(t, fresh); !sameIDs(got, gamma, alpha, beta) {
+		t.Fatalf("bootstrap liked = %v", got)
+	}
+}
+
+func mustLiked(t *testing.T, c *Client) []string {
+	t.Helper()
+	ids, err := c.Liked()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ids
+}
+
+func sameIDs(got []string, want ...string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func openInventory(t *testing.T) *inventory.Store {
@@ -236,18 +305,15 @@ func plays(t *testing.T, c *Client, songID string) int {
 	return 0
 }
 
-func liked(t *testing.T, c *Client, songID string) int {
+func liked(t *testing.T, c *Client, songID string) bool {
 	t.Helper()
 	for _, song := range mustSongs(t, c) {
 		if song.ID == songID {
-			if song.Liked == nil {
-				return -1
-			}
-			return *song.Liked
+			return song.Liked
 		}
 	}
 	t.Fatalf("missing %s", songID)
-	return 0
+	return false
 }
 
 func songByHash(t *testing.T, c *Client, hash string) string {

@@ -60,9 +60,12 @@ func TestBootstrapAnalyticsFollowTheUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = s.db.Exec(`
-		INSERT INTO analytics (user_id, song_id, play_count, finished_count, skip_count, listened_ms, liked)
-		VALUES ('ada', ?, 2, 1, 0, 5000, 1)`, songID)
+		INSERT INTO analytics (user_id, song_id, play_count, finished_count, skip_count, listened_ms)
+		VALUES ('ada', ?, 2, 1, 0, 5000)`, songID)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`INSERT INTO liked (user_id, song_id) VALUES ('ada', ?)`, songID); err != nil {
 		t.Fatal(err)
 	}
 	ada := mustBootstrap(t, s, "ada")
@@ -73,11 +76,11 @@ func TestBootstrapAnalyticsFollowTheUser(t *testing.T) {
 	if err := json.Unmarshal(songByHash(t, ada, "alpha").Analytics, &stats); err != nil {
 		t.Fatal(err)
 	}
-	if stats.PlayCount != 2 || stats.Liked == nil || *stats.Liked != 1 {
-		t.Fatalf("analytics = %+v", stats)
+	if stats.PlayCount != 2 || len(ada.Liked) != 1 || ada.Liked[0] != songID {
+		t.Fatalf("analytics = %+v liked %v", stats, ada.Liked)
 	}
 	bea := mustBootstrap(t, s, "bea")
-	if bea.Seq != ada.Seq || !bytes.Equal(songByHash(t, bea, "alpha").Analytics, []byte(`{}`)) {
+	if bea.Seq != ada.Seq || len(bea.Liked) != 0 || !bytes.Equal(songByHash(t, bea, "alpha").Analytics, []byte(`{}`)) {
 		t.Fatalf("bea analytics = %s", songByHash(t, bea, "alpha").Analytics)
 	}
 }

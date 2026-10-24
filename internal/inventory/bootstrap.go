@@ -16,6 +16,8 @@ type Catalog struct {
 	LibraryID string        `json:"libraryId"`
 	Seq       int64         `json:"seq"`
 	Songs     []CatalogSong `json:"songs"`
+	// Liked is this user's liked song ids, most recently liked first.
+	Liked []string `json:"liked"`
 }
 
 // CatalogSong is one song as a device stores it. Paths are not included.
@@ -34,7 +36,6 @@ type userAnalytics struct {
 	SkipCount      int    `json:"skipCount"`
 	ListenedMs     int64  `json:"listenedMs"`
 	LastPlayedAtMs *int64 `json:"lastPlayedAtMs"`
-	Liked          *int   `json:"liked"`
 }
 
 // Bootstrap reads the catalog and one user's analytics in a single
@@ -68,6 +69,9 @@ func (s *Store) Bootstrap(userID string) (Catalog, error) {
 		return Catalog{}, err
 	}
 	cat.Songs = songs
+	if cat.Liked, err = loadLiked(tx, userID); err != nil {
+		return Catalog{}, err
+	}
 	if err := tx.Commit(); err != nil {
 		return Catalog{}, err
 	}
@@ -106,7 +110,7 @@ func loadCatalogSongs(tx *sql.Tx) ([]CatalogSong, error) {
 
 func attachAnalytics(tx *sql.Tx, userID string, songs []CatalogSong) error {
 	rows, err := tx.Query(`
-		SELECT song_id, play_count, finished_count, skip_count, listened_ms, last_played_at_ms, liked
+		SELECT song_id, play_count, finished_count, skip_count, listened_ms, last_played_at_ms
 		FROM analytics
 		WHERE user_id = ?`, userID)
 	if err != nil {
@@ -117,17 +121,13 @@ func attachAnalytics(tx *sql.Tx, userID string, songs []CatalogSong) error {
 	for rows.Next() {
 		var songID string
 		var stats userAnalytics
-		var lastPlayed, liked sql.NullInt64
-		if err := rows.Scan(&songID, &stats.PlayCount, &stats.FinishedCount, &stats.SkipCount, &stats.ListenedMs, &lastPlayed, &liked); err != nil {
+		var lastPlayed sql.NullInt64
+		if err := rows.Scan(&songID, &stats.PlayCount, &stats.FinishedCount, &stats.SkipCount, &stats.ListenedMs, &lastPlayed); err != nil {
 			return err
 		}
 		if lastPlayed.Valid {
 			v := lastPlayed.Int64
 			stats.LastPlayedAtMs = &v
-		}
-		if liked.Valid {
-			v := int(liked.Int64)
-			stats.Liked = &v
 		}
 		raw, err := json.Marshal(stats)
 		if err != nil {
@@ -144,6 +144,23 @@ func attachAnalytics(tx *sql.Tx, userID string, songs []CatalogSong) error {
 		}
 	}
 	return nil
+}
+
+func loadLiked(tx *sql.Tx, userID string) ([]string, error) {
+	rows, err := tx.Query(`SELECT song_id FROM liked WHERE user_id = ? ORDER BY id DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	liked := []string{}
+	for rows.Next() {
+		var songID string
+		if err := rows.Scan(&songID); err != nil {
+			return nil, err
+		}
+		liked = append(liked, songID)
+	}
+	return liked, rows.Err()
 }
 
 func validateUserID(id string) error {

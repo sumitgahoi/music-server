@@ -256,16 +256,15 @@ func reduceUserAction(tx *sql.Tx, userID, songID, typ string, listened int64, oc
 			ON CONFLICT (user_id, song_id) DO UPDATE SET skip_count = skip_count + 1`,
 			userID, songID)
 		return err
-	case "like", "unlike":
-		liked := 0
-		if typ == "like" {
-			liked = 1
-		}
+	case "like":
+		// A song already liked keeps its place.
 		_, err := tx.Exec(`
-			INSERT INTO analytics (user_id, song_id, liked)
-			VALUES (?, ?, ?)
-			ON CONFLICT (user_id, song_id) DO UPDATE SET liked = excluded.liked`,
-			userID, songID, liked)
+			INSERT INTO liked (user_id, song_id) VALUES (?, ?)
+			ON CONFLICT (user_id, song_id) DO NOTHING`,
+			userID, songID)
+		return err
+	case "unlike":
+		_, err := tx.Exec(`DELETE FROM liked WHERE user_id = ? AND song_id = ?`, userID, songID)
 		return err
 	default:
 		return ErrAction

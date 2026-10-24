@@ -115,8 +115,50 @@ func TestAcceptIsIdempotentForOneUser(t *testing.T) {
 	if err := json.Unmarshal(songByHash(t, ada, "alpha").Analytics, &stats); err != nil {
 		t.Fatal(err)
 	}
-	if stats.PlayCount != 1 || stats.Liked == nil || *stats.Liked != 0 {
-		t.Fatalf("folded = %+v", stats)
+	if stats.PlayCount != 1 || len(ada.Liked) != 0 {
+		t.Fatalf("folded = %+v liked %v", stats, ada.Liked)
+	}
+}
+
+func TestLikedListsNewestFirstAndKeepsTheFirstLike(t *testing.T) {
+	s := newStore(t)
+	apply(t, s, "/music",
+		Observation{Path: "a", ContentID: "alpha", Size: 1},
+		Observation{Path: "b", ContentID: "beta", Size: 1},
+		Observation{Path: "c", ContentID: "gamma", Size: 1},
+	)
+	cat := mustBootstrap(t, s, "ada")
+	alpha := songByHash(t, cat, "alpha").ID
+	beta := songByHash(t, cat, "beta").ID
+	gamma := songByHash(t, cat, "gamma").ID
+	accept := func(id, song, typ string) {
+		t.Helper()
+		if _, err := s.Accept("ada", "phone", Submit{ActionID: id, SongID: song, Type: typ}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	accept("l1", alpha, "like")
+	accept("l2", beta, "like")
+	accept("l3", gamma, "like")
+	accept("l4", alpha, "like")
+	assertLiked(t, mustBootstrap(t, s, "ada").Liked, gamma, beta, alpha)
+
+	accept("u1", alpha, "unlike")
+	accept("l5", alpha, "like")
+	accept("u2", beta, "unlike")
+	assertLiked(t, mustBootstrap(t, s, "ada").Liked, alpha, gamma)
+	assertLiked(t, mustBootstrap(t, s, "bea").Liked)
+}
+
+func assertLiked(t *testing.T, got []string, want ...string) {
+	t.Helper()
+	if len(got) != len(want) {
+		t.Fatalf("liked = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("liked = %v, want %v", got, want)
+		}
 	}
 }
 
@@ -193,38 +235,6 @@ func TestListeningCountsMatchThePublishedActions(t *testing.T) {
 	stats := analyticsFor(t, s, "ada", "alpha")
 	if stats.PlayCount != 1 || stats.ListenedMs != 30001 || stats.SkipCount != 2 || stats.FinishedCount != 2 {
 		t.Fatalf("counts = %+v", stats)
-	}
-}
-
-func TestDeferredAnalyticsColumnsAreRemoved(t *testing.T) {
-	s := newStore(t)
-	if _, err := s.db.Exec(`ALTER TABLE analytics ADD COLUMN saved INTEGER`); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.db.Exec(`ALTER TABLE analytics ADD COLUMN playlist_adds INTEGER NOT NULL DEFAULT 0`); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.ensureListeningColumns(); err != nil {
-		t.Fatal(err)
-	}
-	rows, err := s.db.Query(`PRAGMA table_info(analytics)`)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid, notnull, pk int
-		var name, typ string
-		var dflt sql.NullString
-		if err := rows.Scan(&cid, &name, &typ, &notnull, &dflt, &pk); err != nil {
-			t.Fatal(err)
-		}
-		if name == "saved" || name == "playlist_adds" {
-			t.Fatalf("%s column remains", name)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatal(err)
 	}
 }
 
